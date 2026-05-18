@@ -1,2 +1,2 @@
-export const CLOUDINARY_CLOUD_NAME = 'dq7h2liix';
-export const CLOUDINARY_UPLOAD_PRESET = 'runmate';
+export const CLOUDINARY_CLOUD_NAME = process.env.EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME ?? '';
+export const CLOUDINARY_UPLOAD_PRESET = process.env.EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET ?? '';

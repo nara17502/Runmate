@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  Alert, Modal, ActivityIndicator, AppState,
+  Alert, Modal, ActivityIndicator, AppState, BackHandler,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
@@ -80,7 +80,15 @@ export default function RunningScreen() {
         cancelRunningBgNotif();
       }
     });
-    return () => { appSub.remove(); cleanup(); };
+    const backSub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (phaseRef.current !== 'idle') {
+        Alert.alert('러닝 중', '러닝을 종료하려면 아래 종료 버튼을 누르세요', [{ text: '확인' }]);
+      } else {
+        router.back();
+      }
+      return true;
+    });
+    return () => { appSub.remove(); backSub.remove(); cleanup(); };
   }, []);
 
   const requestPermission = async () => {

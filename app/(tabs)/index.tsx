@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, TouchableOpacity, Dimensions,
   Modal, Animated, PanResponder, RefreshControl, Platform,
@@ -259,12 +259,12 @@ export default function HomeScreen() {
   };
 
   // ─── 파생 데이터 ────────────────────────────────────────────────
-  const tempColor    = getTempColor(temp);
-  const tempLabel    = getTempLabel(temp);
-  const tempEmoji    = getTempEmoji(temp);
-  const isLightTemp  = temp < 37 || (temp >= 37 && temp < 40);
+  const tempColor     = useMemo(() => getTempColor(temp), [temp]);
+  const tempLabel     = useMemo(() => getTempLabel(temp), [temp]);
+  const tempEmoji     = useMemo(() => getTempEmoji(temp), [temp]);
+  const isLightTemp   = temp < 37 || (temp >= 37 && temp < 40);
   const tempTextColor = isLightTemp ? '#333' : '#fff';
-  const animal       = getAnimalData(totalKm);
+  const animal        = useMemo(() => getAnimalData(totalKm), [totalKm]);
   const today   = new Date();
   const dateStr = fmtDateKo(today);
 

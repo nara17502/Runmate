@@ -4,18 +4,23 @@ import { db } from './config';
 const MIN_TEMP = 36.5;
 const MAX_TEMP = 100;
 
+const tempCache: { [uid: string]: { temp: number; ts: number } } = {};
+const CACHE_TTL = 60_000;
+
+const setCache = (uid: string, temp: number) => { tempCache[uid] = { temp, ts: Date.now() }; };
+const clearCache = (uid: string) => { delete tempCache[uid]; };
+
 // 온도 데이터 가져오기 및 자동 계산
 export const getTemperature = async (userId: string): Promise<number> => {
+  const cached = tempCache[userId];
+  if (cached && Date.now() - cached.ts < CACHE_TTL) return cached.temp;
+
   const ref = doc(db, 'temperature', userId);
   const snap = await getDoc(ref);
 
   if (!snap.exists()) {
-    // 처음이면 기본값 저장
-    await setDoc(ref, {
-      temp: MIN_TEMP,
-      lastRunAt: null,
-      updatedAt: Date.now(),
-    });
+    await setDoc(ref, { temp: MIN_TEMP, lastRunAt: null, updatedAt: Date.now() });
+    setCache(userId, MIN_TEMP);
     return MIN_TEMP;
   }
 
@@ -35,6 +40,7 @@ export const getTemperature = async (userId: string): Promise<number> => {
     }
   }
 
+  setCache(userId, temp);
   return temp;
 };
 
@@ -56,6 +62,7 @@ export const updateTempAfterRun = async (userId: string, durationSeconds: number
     updatedAt: Date.now(),
   }, { merge: true });
 
+  clearCache(userId);
   return temp;
 };
 
@@ -74,5 +81,6 @@ export const updateTempAfterRace = async (
   temp = Math.min(MAX_TEMP, parseFloat((temp + rise).toFixed(1)));
 
   await updateDoc(ref, { temp, updatedAt: Date.now() });
+  clearCache(userId);
   return temp;
 };

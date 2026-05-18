@@ -335,6 +335,7 @@ export default function GroupScreen() {
         const coord = { latitude: 37.5665, longitude: 126.9780 };
         setPinnedCoord(coord);
         setMapRegion({ ...coord, latitudeDelta: 0.05, longitudeDelta: 0.05 });
+        Alert.alert('위치 권한 없음', '기기 설정에서 위치 권한을 허용하면 현재 위치가 자동으로 설정돼요.\n지금은 서울 중심으로 지도가 열려요.');
       }
     } catch {
       const coord = { latitude: 37.5665, longitude: 126.9780 };
@@ -397,7 +398,9 @@ export default function GroupScreen() {
     }
     setSubmitting(true);
     try {
-      const code = generateCode();
+      let code = generateCode();
+      const codeSnap = await getDocs(query(collection(db, 'groups'), where('code', '==', code)));
+      if (!codeSnap.empty) code = generateCode();
       const region = `${f.regionMain} ${f.regionDetail}`.trim();
       await addDoc(collection(db, 'groups'), {
         name: f.name.trim(), region, regionMain: f.regionMain,
