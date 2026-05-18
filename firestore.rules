@@ -11,7 +11,8 @@ service cloud.firestore {
     }
 
     // ── 사용자 프로필 ────────────────────────────────────────────
-    // 읽기: 인증된 모든 유저 (랭킹·그룹 멤버 프로필 조회 필요)
+    // 읽기: 인증된 모든 유저 (그룹 멤버 닉네임·프로필 사진 조회 필요)
+    // TODO: 민감 필드(나이, 성별, 마라톤 기록)는 추후 private 서브컬렉션으로 분리 권장
     // 쓰기: 본인만
     match /users/{userId} {
       allow read: if isAuth();
@@ -31,10 +32,10 @@ service cloud.firestore {
     }
 
     // ── 신발 온도 ─────────────────────────────────────────────────
-    // 읽기: 인증된 모든 유저
+    // 읽기: 본인만 (타인의 온도 데이터를 볼 이유 없음)
     // 쓰기: 본인만
     match /temperature/{userId} {
-      allow read: if isAuth();
+      allow read: if isOwner(userId);
       allow write: if isOwner(userId);
     }
 
