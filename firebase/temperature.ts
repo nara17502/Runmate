@@ -54,7 +54,7 @@ export const updateTempAfterRun = async (userId: string, durationSeconds: number
     temp,
     lastRunAt: Date.now(),
     updatedAt: Date.now(),
-  });
+  }, { merge: true });
 
   return temp;
 };

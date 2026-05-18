@@ -157,6 +157,8 @@ export default function RunningScreen() {
   };
 
   const handleResume = async () => {
+    stopTimer();
+    stopGPS();
     startTimer();
     await startGPS();
     setPhase('running');
