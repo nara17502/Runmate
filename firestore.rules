@@ -1,0 +1,72 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+
+    // ── 사용자 프로필 ────────────────────────────────────────────
+    // 읽기: 인증된 모든 유저 (랭킹·그룹 멤버 프로필 조회 필요)
+    // 쓰기: 본인만
+    match /users/{userId} {
+      allow read: if isAuth();
+      allow write: if isOwner(userId);
+    }
+
+    // ── 러닝 기록 ─────────────────────────────────────────────────
+    // 읽기: 인증된 모든 유저 (연령대 랭킹 조회 필요)
+    // 생성: 본인 userId가 포함된 경우만
+    // 수정·삭제: 해당 기록의 소유자만
+    match /runningRecords/{recordId} {
+      allow read: if isAuth();
+      allow create: if isAuth()
+        && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAuth()
+        && resource.data.userId == request.auth.uid;
+    }
+
+    // ── 신발 온도 ─────────────────────────────────────────────────
+    // 읽기: 인증된 모든 유저
+    // 쓰기: 본인만
+    match /temperature/{userId} {
+      allow read: if isAuth();
+      allow write: if isOwner(userId);
+    }
+
+    // ── 그룹 ──────────────────────────────────────────────────────
+    // 읽기: 인증된 모든 유저
+    // 생성: 인증된 유저 (본인이 createdBy 여야 함)
+    // 수정: 그룹장 또는 members/memberCount 필드만 변경하는 경우 (참여·탈퇴)
+    // 삭제: 그룹장만
+    match /groups/{groupId} {
+      allow read: if isAuth();
+      allow create: if isAuth()
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update: if isAuth() && (
+        resource.data.createdBy == request.auth.uid
+        || request.resource.data.diff(resource.data)
+             .affectedKeys()
+             .hasOnly(['members', 'memberCount'])
+      );
+      allow delete: if isAuth()
+        && resource.data.createdBy == request.auth.uid;
+
+      // ── 그룹 채팅 메시지 ────────────────────────────────────────
+      // 읽기: 인증된 모든 유저
+      // 생성: 본인 userId가 포함된 경우만
+      // 수정·삭제: 메시지 작성자만
+      match /messages/{messageId} {
+        allow read: if isAuth();
+        allow create: if isAuth()
+          && request.resource.data.userId == request.auth.uid;
+        allow update, delete: if isAuth()
+          && resource.data.userId == request.auth.uid;
+      }
+    }
+  }
+}
