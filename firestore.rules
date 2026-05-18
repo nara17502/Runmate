@@ -43,6 +43,8 @@ service cloud.firestore {
     // 읽기: 인증된 모든 유저
     // 생성: 인증된 유저 (본인이 createdBy 여야 함)
     // 수정: 그룹장 또는 members/memberCount 필드만 변경하는 경우 (참여·탈퇴)
+    //       참여·탈퇴 시 비밀번호 필드는 반드시 유지되어야 함
+    // TODO: 비밀번호 검증은 현재 클라이언트에서만 수행. 완전한 서버 검증은 Cloud Function 필요
     // 삭제: 그룹장만
     match /groups/{groupId} {
       allow read: if isAuth();
@@ -50,9 +52,12 @@ service cloud.firestore {
         && request.resource.data.createdBy == request.auth.uid;
       allow update: if isAuth() && (
         resource.data.createdBy == request.auth.uid
-        || request.resource.data.diff(resource.data)
-             .affectedKeys()
-             .hasOnly(['members', 'memberCount'])
+        || (
+          request.resource.data.diff(resource.data)
+            .affectedKeys()
+            .hasOnly(['members', 'memberCount'])
+          && request.resource.data.password == resource.data.password
+        )
       );
       allow delete: if isAuth()
         && resource.data.createdBy == request.auth.uid;

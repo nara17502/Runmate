@@ -206,6 +206,7 @@ export default function GroupScreen() {
 
   useEffect(() => {
     loadAll();
+    return () => cleanupChat();
   }, []);
 
   const loadAll = async () => {

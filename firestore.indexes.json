@@ -1,0 +1,21 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "runningRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "userId",    "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "runningRecords",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "date",       "order": "ASCENDING" },
+        { "fieldPath": "distanceKm", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

@@ -181,7 +181,7 @@ export default function ProfileScreen() {
       // 대회기록도 합산
       const userDoc = await getDoc(doc(db, 'users', userId));
       if (userDoc.exists()) {
-        (userDoc.data().records || []).forEach((r: MarathonRecord) => {
+        (userDoc.data()?.records || []).forEach((r: MarathonRecord) => {
           totalKm += DISTANCE_KM[r.distance] || 0;
         });
       }
