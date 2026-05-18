@@ -24,11 +24,11 @@ export const getTemperature = async (userId: string): Promise<number> => {
   const lastRunAt = data.lastRunAt ?? null;
   const now = Date.now();
 
-  // 마지막 러닝 후 48시간 지나면 0.1도씩 하락
+  // 마지막 러닝 후 48시간 유예, 이후 하루(24시간)당 0.1도씩 하락
   if (lastRunAt) {
     const hoursPassed = (now - lastRunAt) / (1000 * 60 * 60);
     if (hoursPassed >= 48) {
-      const drops = Math.floor(hoursPassed / 48);
+      const drops = Math.floor(hoursPassed / 24);
       temp = Math.max(MIN_TEMP, temp - drops * 0.1);
       temp = parseFloat(temp.toFixed(1));
       await updateDoc(ref, { temp, updatedAt: now });
