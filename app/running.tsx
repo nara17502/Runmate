@@ -65,6 +65,7 @@ export default function RunningScreen() {
     runData: any; userId: string;
     finalSeconds: number; finalDistanceKm: number; finalPace: string;
   } | null>(null);
+  const isUploadingRef = useRef(false);
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -216,7 +217,8 @@ export default function RunningScreen() {
         {
           text: '다시 시도',
           onPress: async () => {
-            if (!pendingRunRef.current) return;
+            if (!pendingRunRef.current || isUploadingRef.current) return;
+            isUploadingRef.current = true;
             const { runData, userId, finalSeconds, finalDistanceKm, finalPace } = pendingRunRef.current;
             setSaving(true);
             setSavePhase('saving');
@@ -226,6 +228,7 @@ export default function RunningScreen() {
               pendingRunRef.current = null;
               goToResult(docId, finalSeconds, finalDistanceKm, finalPace);
             } catch {
+              isUploadingRef.current = false;
               setSaving(false);
               setSavePhase('failed');
               showSaveFailAlert();
@@ -249,6 +252,9 @@ export default function RunningScreen() {
     runData: any, userId: string,
     finalSeconds: number, finalDistanceKm: number, finalPace: string,
   ) => {
+    if (isUploadingRef.current) return;
+    isUploadingRef.current = true;
+
     await saveDraft({ ...runData, createdAt: Date.now() });
     pendingRunRef.current = { runData, userId, finalSeconds, finalDistanceKm, finalPace };
 
@@ -262,6 +268,7 @@ export default function RunningScreen() {
       pendingRunRef.current = null;
       goToResult(docId, finalSeconds, finalDistanceKm, finalPace);
     } catch {
+      isUploadingRef.current = false;
       setSaving(false);
       setSavePhase('failed');
       showSaveFailAlert();
