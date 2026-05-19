@@ -14,7 +14,12 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "UIBackgroundModes": ["location"],
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "러닝 중 백그라운드에서도 GPS를 측정하기 위해 위치 권한이 필요해요.",
+        "NSLocationWhenInUseUsageDescription": "러닝 GPS 측정을 위해 위치 권한이 필요해요."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -28,7 +33,16 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "러닝 중 백그라운드에서도 GPS를 측정하기 위해 위치 권한이 필요해요.",
+          "locationWhenInUsePermission": "러닝 GPS 측정을 위해 위치 권한이 필요해요.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true
+        }
+      ]
     ]
   }
 }

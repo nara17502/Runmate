@@ -4,6 +4,7 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { getDoc, doc } from 'firebase/firestore';
 import { auth, db } from '../firebase/config';
 import { initNotifications } from '../constants/notifications';
+import '../constants/locationTask'; // registers background location task on every boot
 
 type ProfileCtx = { markProfileComplete: () => void };
 export const ProfileContext = createContext<ProfileCtx>({ markProfileComplete: () => {} });

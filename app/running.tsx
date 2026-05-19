@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
+import * as TaskManager from 'expo-task-manager';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -14,6 +15,9 @@ import { updateTempAfterRun } from '../firebase/temperature';
 import { cancelStreakWarning, showRunningBgNotif, cancelRunningBgNotif } from '../constants/notifications';
 
 import { ACCENT } from '../constants/colors';
+import {
+  LOCATION_TASK, setOnLocation, getBgLocations, clearBgLocations,
+} from '../constants/locationTask';
 
 const DRAFT_KEY = 'runmate_pending_run';
 
@@ -66,6 +70,7 @@ export default function RunningScreen() {
     finalSeconds: number; finalDistanceKm: number; finalPace: string;
   } | null>(null);
   const isUploadingRef = useRef(false);
+  const bgStartRef = useRef<number | null>(null); // timestamp when app went to background
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -73,11 +78,34 @@ export default function RunningScreen() {
 
   useEffect(() => {
     requestPermission();
-    const appSub = AppState.addEventListener('change', nextState => {
+    const appSub = AppState.addEventListener('change', async (nextState) => {
       if (nextState.match(/inactive|background/) && phaseRef.current === 'running') {
+        setOnLocation(null); // pause live UI updates; task keeps collecting in background
+        bgStartRef.current = Date.now();
         showRunningBgNotif();
       } else if (nextState === 'active') {
         cancelRunningBgNotif();
+        if (phaseRef.current === 'running') {
+          // Compensate timer for time spent in background
+          if (bgStartRef.current) {
+            const bgSecs = Math.floor((Date.now() - bgStartRef.current) / 1000);
+            setSeconds(prev => prev + bgSecs);
+            bgStartRef.current = null;
+          }
+          // Merge locations collected while backgrounded
+          const pts = await getBgLocations();
+          clearBgLocations();
+          pts.forEach(([lat, lon]) => {
+            routeRef.current.push({ lat, lon, time: Date.now() });
+            if (lastPosRef.current) {
+              const d = getDistance(lastPosRef.current.lat, lastPosRef.current.lon, lat, lon);
+              if (d >= 1 && d < 50) setDistanceM(prev => prev + d);
+            }
+            lastPosRef.current = { lat, lon };
+          });
+          // Re-register live callback for foreground updates
+          setOnLocation(makeLiveHandler());
+        }
       }
     });
     const backSub = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -88,7 +116,7 @@ export default function RunningScreen() {
       }
       return true;
     });
-    return () => { appSub.remove(); backSub.remove(); cleanup(); };
+    return () => { appSub.remove(); backSub.remove(); cleanup().catch(() => {}); };
   }, []);
 
   const requestPermission = async () => {
@@ -96,7 +124,19 @@ export default function RunningScreen() {
     setLocationPermission(status === 'granted');
     if (status !== 'granted') {
       Alert.alert('위치 권한 필요', 'GPS 러닝을 위해 위치 권한이 필요해요!');
+      return;
     }
+    await Location.requestBackgroundPermissionsAsync();
+  };
+
+  // Returns a location handler that updates route + distance state in real time
+  const makeLiveHandler = () => (lat: number, lon: number) => {
+    routeRef.current.push({ lat, lon, time: Date.now() });
+    if (lastPosRef.current) {
+      const d = getDistance(lastPosRef.current.lat, lastPosRef.current.lon, lat, lon);
+      if (d >= 1 && d < 50) setDistanceM(prev => prev + d);
+    }
+    lastPosRef.current = { lat, lon };
   };
 
   // ─── 타이머 / GPS 제어 ────────────────────────────────────────
@@ -114,30 +154,54 @@ export default function RunningScreen() {
   };
 
   const startGPS = async () => {
-    locationRef.current = await Location.watchPositionAsync(
-      { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 3000, distanceInterval: 5 },
-      (location) => {
-        const { latitude, longitude } = location.coords;
-        routeRef.current.push({ lat: latitude, lon: longitude, time: Date.now() });
-        if (lastPosRef.current) {
-          const d = getDistance(lastPosRef.current.lat, lastPosRef.current.lon, latitude, longitude);
-          if (d >= 1 && d < 50) setDistanceM(prev => prev + d);
+    await clearBgLocations();
+    setOnLocation(makeLiveHandler());
+    try {
+      await Location.startLocationUpdatesAsync(LOCATION_TASK, {
+        accuracy: Location.Accuracy.BestForNavigation,
+        timeInterval: 3000,
+        distanceInterval: 5,
+        showsBackgroundLocationIndicator: true,
+        pausesUpdatesAutomatically: false,
+        foregroundService: {
+          notificationTitle: '러닝 측정 중',
+          notificationBody: 'GPS로 거리를 측정하고 있어요',
+          notificationColor: '#FF6B35',
+        },
+      });
+    } catch {
+      // Fallback for Expo Go environments where TaskManager background location is unavailable
+      locationRef.current = await Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 3000, distanceInterval: 5 },
+        (loc) => {
+          const { latitude: lat, longitude: lon } = loc.coords;
+          routeRef.current.push({ lat, lon, time: Date.now() });
+          if (lastPosRef.current) {
+            const d = getDistance(lastPosRef.current.lat, lastPosRef.current.lon, lat, lon);
+            if (d >= 1 && d < 50) setDistanceM(prev => prev + d);
+          }
+          lastPosRef.current = { lat, lon };
         }
-        lastPosRef.current = { lat: latitude, lon: longitude };
-      }
-    );
+      );
+    }
   };
 
-  const stopGPS = () => {
+  const stopGPS = async () => {
+    setOnLocation(null);
     if (locationRef.current) {
       locationRef.current.remove();
       locationRef.current = null;
     }
+    try {
+      if (await TaskManager.isTaskRegisteredAsync(LOCATION_TASK)) {
+        await Location.stopLocationUpdatesAsync(LOCATION_TASK);
+      }
+    } catch {}
   };
 
-  const cleanup = () => {
+  const cleanup = async () => {
     stopTimer();
-    stopGPS();
+    await stopGPS();
     deactivateKeepAwake();
     cancelRunningBgNotif();
   };
@@ -158,16 +222,16 @@ export default function RunningScreen() {
     setPhase('running');
   };
 
-  const handlePause = () => {
+  const handlePause = async () => {
     stopTimer();
-    stopGPS();
+    await stopGPS();
     lastPosRef.current = null; // GPS 재개 시 이전 위치로 인한 점프 방지
     setPhase('paused');
   };
 
   const handleResume = async () => {
     stopTimer();
-    stopGPS();
+    await stopGPS();
     startTimer();
     await startGPS();
     setPhase('running');
@@ -284,7 +348,7 @@ export default function RunningScreen() {
   };
 
   const handleFinish = async () => {
-    cleanup();
+    await cleanup();
     setPhase('idle');
     setShowStopModal(false);
 
