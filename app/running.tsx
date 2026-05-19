@@ -126,7 +126,11 @@ export default function RunningScreen() {
       Alert.alert('위치 권한 필요', 'GPS 러닝을 위해 위치 권한이 필요해요!');
       return;
     }
-    await Location.requestBackgroundPermissionsAsync();
+    try {
+      await Location.requestBackgroundPermissionsAsync();
+    } catch {
+      // Expo Go on real device lacks NSLocationAlwaysAndWhenInUseUsageDescription in its Info.plist
+    }
   };
 
   // Returns a location handler that updates route + distance state in real time
