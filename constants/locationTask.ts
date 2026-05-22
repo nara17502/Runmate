@@ -23,7 +23,7 @@ export const getBgLocations = async (): Promise<[number, number][]> => {
   }
 };
 
-TaskManager.defineTask(LOCATION_TASK, ({ data, error }: TaskManager.TaskManagerTaskBody) => {
+TaskManager.defineTask(LOCATION_TASK, async ({ data, error }: TaskManager.TaskManagerTaskBody) => {
   if (error || !data) return;
   const { locations } = data as { locations: Location.LocationObject[] };
   for (const loc of locations) {

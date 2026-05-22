@@ -409,6 +409,7 @@ const styles = StyleSheet.create({
   },
   noMapEmoji: { fontSize: 36 },
   noMapText: { fontSize: 14, color: '#bbb' },
+  noMapSub: { fontSize: 12, color: '#ccc', textAlign: 'center', marginTop: 6, lineHeight: 18 },
 
   // 날짜
   dateText: {

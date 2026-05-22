@@ -1,7 +1,15 @@
 import { initializeApp } from 'firebase/app';
-import { initializeAuth, getReactNativePersistence } from 'firebase/auth';
+import { initializeAuth } from 'firebase/auth';
+import type { Persistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 import ReactNativeAsyncStorage from '@react-native-async-storage/async-storage';
+
+// getReactNativePersistence is only in the RN build; tsc resolves the wrong
+// types entrypoint for this package, so we pull it via require at runtime.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { getReactNativePersistence } = require('firebase/auth') as {
+  getReactNativePersistence: (storage: typeof ReactNativeAsyncStorage) => Persistence;
+};
 
 const firebaseConfig = {
   apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,

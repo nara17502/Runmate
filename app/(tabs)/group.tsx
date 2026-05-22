@@ -2151,6 +2151,8 @@ const styles = StyleSheet.create({
   memberCount: { fontSize: 12, color: '#999', fontWeight: '600', minWidth: 40, textAlign: 'right' },
   tagRow: { flexDirection: 'row', gap: 6 },
   tagChip: { fontSize: 11, color: '#888', backgroundColor: '#F5F5F5', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  waitlistCountChip: { backgroundColor: '#FFF3ED', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
+  waitlistCountChipText: { fontSize: 11, color: '#FF6B35', fontWeight: '600' },
 
   // 카드 (상세)
   card: {
