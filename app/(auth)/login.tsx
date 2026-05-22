@@ -1,143 +1,153 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ActivityIndicator,
   StyleSheet, KeyboardAvoidingView, Platform, StatusBar,
-  Dimensions, ScrollView, TextInput as RNTextInput, Alert,
+  Dimensions, ScrollView,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import {
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  sendPasswordResetEmail,
-} from 'firebase/auth';
-import { auth } from '../../firebase/config';
-
-const SAVED_EMAIL_KEY = 'runmate_saved_email';
-const AUTO_LOGIN_KEY  = 'runmate_auto_login';
-
+import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
+import { signInWithPhoneNumber, ConfirmationResult } from 'firebase/auth';
+import { auth, app } from '../../firebase/config';
 import { ACCENT } from '../../constants/colors';
+
 const { width } = Dimensions.get('window');
 
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const RESEND_COOLDOWN = 60;  // seconds
+const OTP_EXPIRY     = 180; // seconds (3 min)
 
-const getKoreanError = (code: string): string => {
+// 010-1234-5678 형식으로 자동 하이픈 삽입
+const formatPhone = (raw: string): string => {
+  const d = raw.replace(/\D/g, '').slice(0, 11);
+  if (d.length <= 3)  return d;
+  if (d.length <= 7)  return `${d.slice(0, 3)}-${d.slice(3)}`;
+  return `${d.slice(0, 3)}-${d.slice(3, 7)}-${d.slice(7)}`;
+};
+
+// 010-1234-5678 → +821012345678 (E.164)
+const toE164 = (phone: string): string => {
+  const d = phone.replace(/\D/g, '');
+  return d.startsWith('0') ? `+82${d.slice(1)}` : `+82${d}`;
+};
+
+const isValidPhone = (phone: string): boolean => {
+  const d = phone.replace(/\D/g, '');
+  return d.length === 10 || d.length === 11;
+};
+
+const getPhoneError = (code: string): string => {
   switch (code) {
-    case 'auth/invalid-email':        return '이메일 형식이 올바르지 않아요';
-    case 'auth/user-not-found':
-    case 'auth/invalid-credential':   return '이메일 또는 비밀번호를 확인해주세요';
-    case 'auth/wrong-password':       return '비밀번호가 틀렸어요';
-    case 'auth/email-already-in-use': return '이미 사용 중인 이메일이에요';
-    case 'auth/weak-password':        return '비밀번호는 6자리 이상이어야 해요';
-    case 'auth/too-many-requests':    return '로그인 시도가 너무 많아요. 잠시 후 다시 시도해주세요';
-    case 'auth/network-request-failed': return '네트워크 연결을 확인해주세요';
-    default:                          return '문제가 발생했어요. 다시 시도해주세요';
+    case 'auth/invalid-phone-number':    return '전화번호 형식이 올바르지 않아요';
+    case 'auth/too-many-requests':       return '너무 많은 시도가 있었어요. 잠시 후 다시 해주세요';
+    case 'auth/quota-exceeded':          return 'SMS 한도에 도달했어요. 잠시 후 다시 시도해주세요';
+    case 'auth/network-request-failed':  return '네트워크 연결을 확인해주세요';
+    case 'auth/captcha-check-failed':    return 'reCAPTCHA 인증에 실패했어요. 다시 시도해주세요';
+    default:                             return '오류가 발생했어요. 다시 시도해주세요';
   }
 };
 
-export default function LoginScreen() {
-  const [email, setEmail]         = useState('');
-  const [password, setPassword]   = useState('');
-  const [isSignUp, setIsSignUp]   = useState(false);
-  const [loading, setLoading]     = useState(false);
-  const [saveEmail, setSaveEmail] = useState(false);
-  const [autoLogin, setAutoLogin] = useState(false);
-  const [showPw, setShowPw]       = useState(false);
-  const [errorMsg, setErrorMsg]   = useState('');
+const getOtpError = (code: string): string => {
+  switch (code) {
+    case 'auth/invalid-verification-code': return '인증번호가 올바르지 않아요';
+    case 'auth/code-expired':              return '인증번호가 만료됐어요. 재발송해주세요';
+    case 'auth/too-many-requests':         return '너무 많은 시도가 있었어요. 잠시 후 다시 해주세요';
+    case 'auth/network-request-failed':    return '네트워크 연결을 확인해주세요';
+    default:                               return '인증에 실패했어요. 다시 시도해주세요';
+  }
+};
 
-  const pwRef = useRef<RNTextInput>(null);
+type Phase = 'phone' | 'otp';
+
+export default function LoginScreen() {
+  const recaptchaVerifierRef = useRef<FirebaseRecaptchaVerifierModal>(null);
+  const otpInputRef = useRef<TextInput>(null);
+
+  const [phase, setPhase]             = useState<Phase>('phone');
+  const [phone, setPhone]             = useState('');
+  const [otp, setOtp]                 = useState('');
+  const [loading, setLoading]         = useState(false);
+  const [errorMsg, setErrorMsg]       = useState('');
+  const [confirmation, setConfirmation] = useState<ConfirmationResult | null>(null);
+  const [resendTimer, setResendTimer] = useState(0);
+  const [expiryTimer, setExpiryTimer] = useState(OTP_EXPIRY);
+
+  const resendIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const expiryIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    (async () => {
-      const [savedEmail, savedAuto] = await Promise.all([
-        AsyncStorage.getItem(SAVED_EMAIL_KEY),
-        AsyncStorage.getItem(AUTO_LOGIN_KEY),
-      ]);
-      if (savedEmail) { setEmail(savedEmail); setSaveEmail(true); }
-      if (savedAuto === 'true') setAutoLogin(true);
-    })();
+    return () => {
+      clearInterval(resendIntervalRef.current ?? undefined);
+      clearInterval(expiryIntervalRef.current ?? undefined);
+    };
   }, []);
 
-  const validateEmail = (value: string) => EMAIL_REGEX.test(value.trim());
+  const startTimers = () => {
+    // 재발송 쿨다운
+    setResendTimer(RESEND_COOLDOWN);
+    clearInterval(resendIntervalRef.current ?? undefined);
+    resendIntervalRef.current = setInterval(() => {
+      setResendTimer(prev => {
+        if (prev <= 1) { clearInterval(resendIntervalRef.current!); return 0; }
+        return prev - 1;
+      });
+    }, 1000);
 
-  const handleAuth = async () => {
+    // 인증번호 만료 카운트다운
+    setExpiryTimer(OTP_EXPIRY);
+    clearInterval(expiryIntervalRef.current ?? undefined);
+    expiryIntervalRef.current = setInterval(() => {
+      setExpiryTimer(prev => {
+        if (prev <= 1) { clearInterval(expiryIntervalRef.current!); return 0; }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const sendOtp = async () => {
     setErrorMsg('');
-
-    if (!email.trim()) {
-      setErrorMsg('이메일을 입력해주세요'); return;
+    if (!isValidPhone(phone)) {
+      setErrorMsg('올바른 전화번호를 입력해주세요 (예: 010-1234-5678)');
+      return;
     }
-    if (!validateEmail(email)) {
-      setErrorMsg('이메일 형식이 올바르지 않아요 (예: name@email.com)'); return;
-    }
-    if (!password) {
-      setErrorMsg('비밀번호를 입력해주세요'); return;
-    }
-    if (isSignUp && password.length < 6) {
-      setErrorMsg('비밀번호는 6자리 이상이어야 해요'); return;
-    }
-
     setLoading(true);
     try {
-      if (isSignUp) {
-        await createUserWithEmailAndPassword(auth, email.trim(), password);
-      } else {
-        await signInWithEmailAndPassword(auth, email.trim(), password);
-      }
-
-      // 이메일 저장
-      if (saveEmail || autoLogin) {
-        await AsyncStorage.setItem(SAVED_EMAIL_KEY, email.trim());
-      } else {
-        await AsyncStorage.removeItem(SAVED_EMAIL_KEY);
-      }
-
-      // 자동 로그인 체크박스 상태 기억 (Firebase 세션은 자체 유지됨)
-      if (autoLogin) {
-        await AsyncStorage.setItem(AUTO_LOGIN_KEY, 'true');
-      } else {
-        await AsyncStorage.removeItem(AUTO_LOGIN_KEY);
-      }
-    } catch (error: any) {
-      setErrorMsg(getKoreanError(error?.code ?? ''));
+      const result = await signInWithPhoneNumber(auth, toE164(phone), recaptchaVerifierRef.current!);
+      setConfirmation(result);
+      setPhase('otp');
+      setOtp('');
+      startTimers();
+      setTimeout(() => otpInputRef.current?.focus(), 300);
+    } catch (err: any) {
+      setErrorMsg(getPhoneError(err?.code ?? ''));
+    } finally {
       setLoading(false);
     }
   };
 
-  const handleResetPassword = async () => {
+  const verifyOtp = async () => {
     setErrorMsg('');
-    if (!email.trim()) {
-      setErrorMsg('비밀번호를 재설정할 이메일을 입력해주세요'); return;
+    if (otp.length !== 6) {
+      setErrorMsg('6자리 인증번호를 입력해주세요');
+      return;
     }
-    if (!validateEmail(email)) {
-      setErrorMsg('이메일 형식이 올바르지 않아요'); return;
-    }
+    if (!confirmation) return;
+    setLoading(true);
     try {
-      await sendPasswordResetEmail(auth, email.trim());
-      Alert.alert(
-        '이메일 발송 완료',
-        `${email.trim()} 으로\n비밀번호 재설정 링크를 보냈어요.\n\n스팸 폴더도 확인해주세요.`,
-        [{ text: '확인' }]
-      );
-    } catch (error: any) {
-      const code = error?.code ?? '';
-      if (code === 'auth/user-not-found' || code === 'auth/invalid-credential') {
-        setErrorMsg('등록되지 않은 이메일이에요');
-      } else {
-        setErrorMsg(getKoreanError(code));
-      }
+      await confirmation.confirm(otp);
+      // onAuthStateChanged in _layout.tsx handles navigation
+    } catch (err: any) {
+      setErrorMsg(getOtpError(err?.code ?? ''));
+      setLoading(false);
     }
   };
 
-  const toggleAutoLogin = (v: boolean) => {
-    setAutoLogin(v);
-    if (v) setSaveEmail(true);
+  const handlePhoneChange = (text: string) => {
+    setPhone(formatPhone(text));
+    setErrorMsg('');
   };
 
-  const handleTabSwitch = (signup: boolean) => {
-    setIsSignUp(signup);
-    setErrorMsg('');
-    setPassword('');
-    setShowPw(false);
-  };
+  const fmtExpiry = (s: number) =>
+    `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+
+  const maskedPhone = phone.replace(/(\d{3})-(\d{4})-(\d{4})/, '$1-****-$3');
 
   return (
     <KeyboardAvoidingView
@@ -146,7 +156,14 @@ export default function LoginScreen() {
     >
       <StatusBar barStyle="light-content" />
 
-      {/* ── 상단 컬러 배경 ── */}
+      {/* reCAPTCHA 모달 (화면에 보이지 않음, 인증 시 자동 팝업) */}
+      <FirebaseRecaptchaVerifierModal
+        ref={recaptchaVerifierRef}
+        firebaseConfig={app.options}
+        attemptInvisibleVerification
+      />
+
+      {/* 상단 브랜드 배너 */}
       <View style={styles.topBg}>
         <View style={styles.deco1} />
         <View style={styles.deco2} />
@@ -161,138 +178,138 @@ export default function LoginScreen() {
         </View>
       </View>
 
-      {/* ── 폼 ── */}
+      {/* 폼 */}
       <ScrollView
         style={styles.formScroll}
         contentContainerStyle={styles.formContent}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* 탭 */}
-        <View style={styles.tabRow}>
-          <TouchableOpacity
-            style={[styles.tabBtn, !isSignUp && styles.tabBtnActive]}
-            onPress={() => handleTabSwitch(false)}
-          >
-            <Text style={[styles.tabBtnText, !isSignUp && styles.tabBtnTextActive]}>로그인</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.tabBtn, isSignUp && styles.tabBtnActive]}
-            onPress={() => handleTabSwitch(true)}
-          >
-            <Text style={[styles.tabBtnText, isSignUp && styles.tabBtnTextActive]}>회원가입</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* 이메일 */}
-        <View style={styles.fieldWrap}>
-          <Text style={styles.fieldLabel}>이메일</Text>
-          <View style={[styles.inputBox, !!errorMsg && errorMsg.includes('이메일') && styles.inputBoxError]}>
-            <Text style={styles.inputIcon}>✉️</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="example@email.com"
-              placeholderTextColor="#C7C7CC"
-              value={email}
-              onChangeText={t => { setEmail(t); setErrorMsg(''); }}
-              autoCapitalize="none"
-              keyboardType="email-address"
-              returnKeyType="next"
-              onSubmitEditing={() => pwRef.current?.focus()}
-              editable={!loading}
-            />
-          </View>
-        </View>
-
-        {/* 비밀번호 */}
-        <View style={styles.fieldWrap}>
-          <Text style={styles.fieldLabel}>비밀번호</Text>
-          <View style={[styles.inputBox, !!errorMsg && errorMsg.includes('비밀번호') && styles.inputBoxError]}>
-            <Text style={styles.inputIcon}>🔑</Text>
-            <TextInput
-              ref={pwRef}
-              style={styles.input}
-              placeholder={isSignUp ? '6자리 이상 입력' : '비밀번호 입력'}
-              placeholderTextColor="#C7C7CC"
-              value={password}
-              onChangeText={t => { setPassword(t); setErrorMsg(''); }}
-              secureTextEntry={!showPw}
-              returnKeyType="done"
-              onSubmitEditing={handleAuth}
-              editable={!loading}
-            />
-            <TouchableOpacity onPress={() => setShowPw(v => !v)} style={styles.eyeBtn}>
-              <Text style={styles.eyeIcon}>{showPw ? '🙈' : '👁'}</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* 에러 메시지 */}
-        {!!errorMsg && (
-          <View style={styles.errorBox}>
-            <Text style={styles.errorText}>⚠ {errorMsg}</Text>
-          </View>
-        )}
-
-        {/* 체크박스 행 + 비밀번호 찾기 (로그인 탭만) */}
-        {!isSignUp && (
+        {/* ── 전화번호 입력 단계 ── */}
+        {phase === 'phone' && (
           <>
-            <View style={styles.checkRow}>
-              <TouchableOpacity
-                style={styles.checkItem}
-                onPress={() => setSaveEmail(v => !v)}
-                activeOpacity={0.7}
-                disabled={autoLogin}
-              >
-                <View style={[styles.checkbox, (saveEmail || autoLogin) && styles.checkboxOn]}>
-                  {(saveEmail || autoLogin) && <Text style={styles.checkTick}>✓</Text>}
-                </View>
-                <Text style={[styles.checkLabel, autoLogin && { color: '#BBBBBB' }]}>이메일 저장</Text>
-              </TouchableOpacity>
+            <Text style={styles.stepTitle}>전화번호로 시작하기</Text>
+            <Text style={styles.stepSub}>본인 명의 휴대폰 번호를 입력해주세요{'\n'}인증번호 SMS를 보내드려요</Text>
 
-              <TouchableOpacity
-                style={styles.checkItem}
-                onPress={() => toggleAutoLogin(!autoLogin)}
-                activeOpacity={0.7}
-              >
-                <View style={[styles.checkbox, autoLogin && styles.checkboxOn]}>
-                  {autoLogin && <Text style={styles.checkTick}>✓</Text>}
-                </View>
-                <Text style={styles.checkLabel}>자동 로그인</Text>
-              </TouchableOpacity>
+            <View style={styles.fieldWrap}>
+              <Text style={styles.fieldLabel}>휴대폰 번호</Text>
+              <View style={[styles.inputBox, !!errorMsg && styles.inputBoxError]}>
+                <Text style={styles.inputIcon}>📱</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="010-0000-0000"
+                  placeholderTextColor="#C7C7CC"
+                  value={phone}
+                  onChangeText={handlePhoneChange}
+                  keyboardType="phone-pad"
+                  returnKeyType="done"
+                  onSubmitEditing={sendOtp}
+                  editable={!loading}
+                  maxLength={13}
+                />
+              </View>
             </View>
 
-            {/* 비밀번호 재설정 */}
+            {!!errorMsg && (
+              <View style={styles.errorBox}>
+                <Text style={styles.errorText}>⚠ {errorMsg}</Text>
+              </View>
+            )}
+
             <TouchableOpacity
-              style={styles.forgotBtn}
-              onPress={handleResetPassword}
-              activeOpacity={0.7}
+              style={[styles.button, (loading || !isValidPhone(phone)) && styles.buttonDisabled]}
+              onPress={sendOtp}
+              activeOpacity={0.85}
+              disabled={loading || !isValidPhone(phone)}
             >
-              <Text style={styles.forgotText}>비밀번호를 잊으셨나요?</Text>
+              {loading
+                ? <ActivityIndicator color="#fff" size="small" />
+                : <Text style={styles.buttonText}>인증번호 받기</Text>
+              }
             </TouchableOpacity>
+
+            <View style={styles.noticeBox}>
+              <Text style={styles.noticeText}>
+                💬 인증번호 SMS가 발송됩니다.{'\n'}
+                수신되지 않으면 스팸 차단 여부를 확인해주세요.
+              </Text>
+            </View>
           </>
         )}
 
-        {/* 로그인/가입 버튼 */}
-        <TouchableOpacity
-          style={[styles.button, loading && styles.buttonDisabled]}
-          onPress={handleAuth}
-          activeOpacity={0.85}
-          disabled={loading}
-        >
-          {loading
-            ? <ActivityIndicator color="#fff" size="small" />
-            : <Text style={styles.buttonText}>{isSignUp ? '가입하기' : '로그인'}</Text>
-          }
-        </TouchableOpacity>
+        {/* ── OTP 인증 단계 ── */}
+        {phase === 'otp' && (
+          <>
+            <Text style={styles.stepTitle}>인증번호 입력</Text>
+            <Text style={styles.stepSub}>
+              <Text style={styles.boldPhone}>{maskedPhone}</Text>
+              {'\n'}으로 전송된 6자리 번호를 입력해주세요
+            </Text>
 
-        {/* 모드 전환 */}
-        <TouchableOpacity onPress={() => handleTabSwitch(!isSignUp)} style={styles.switchRow}>
-          <Text style={styles.switchText}>
-            {isSignUp ? '이미 계정이 있으신가요? ' : '아직 계정이 없으신가요? '}
-            <Text style={styles.switchLink}>{isSignUp ? '로그인' : '회원가입'}</Text>
-          </Text>
-        </TouchableOpacity>
+            <View style={styles.fieldWrap}>
+              <View style={styles.otpLabelRow}>
+                <Text style={styles.fieldLabel}>인증번호</Text>
+                <Text style={[styles.expiryText, expiryTimer <= 30 && styles.expiryTextUrgent]}>
+                  {expiryTimer > 0 ? `⏱ ${fmtExpiry(expiryTimer)}` : '만료됨'}
+                </Text>
+              </View>
+              <View style={[styles.inputBox, !!errorMsg && styles.inputBoxError]}>
+                <Text style={styles.inputIcon}>🔢</Text>
+                <TextInput
+                  ref={otpInputRef}
+                  style={styles.input}
+                  placeholder="6자리 숫자"
+                  placeholderTextColor="#C7C7CC"
+                  value={otp}
+                  onChangeText={t => { setOtp(t.replace(/\D/g, '').slice(0, 6)); setErrorMsg(''); }}
+                  keyboardType="number-pad"
+                  returnKeyType="done"
+                  onSubmitEditing={verifyOtp}
+                  editable={!loading}
+                  maxLength={6}
+                />
+              </View>
+            </View>
+
+            {!!errorMsg && (
+              <View style={styles.errorBox}>
+                <Text style={styles.errorText}>⚠ {errorMsg}</Text>
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={[styles.button, (loading || otp.length !== 6) && styles.buttonDisabled]}
+              onPress={verifyOtp}
+              activeOpacity={0.85}
+              disabled={loading || otp.length !== 6}
+            >
+              {loading
+                ? <ActivityIndicator color="#fff" size="small" />
+                : <Text style={styles.buttonText}>확인</Text>
+              }
+            </TouchableOpacity>
+
+            {/* 재발송 + 번호 변경 */}
+            <View style={styles.resendRow}>
+              <TouchableOpacity
+                onPress={sendOtp}
+                disabled={resendTimer > 0 || loading}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.resendText, resendTimer > 0 && styles.resendTextDisabled]}>
+                  {resendTimer > 0 ? `재발송 (${resendTimer}s)` : '인증번호 재발송'}
+                </Text>
+              </TouchableOpacity>
+              <Text style={styles.dividerDot}> · </Text>
+              <TouchableOpacity
+                onPress={() => { setPhase('phone'); setOtp(''); setErrorMsg(''); }}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.changePhoneText}>번호 변경</Text>
+              </TouchableOpacity>
+            </View>
+          </>
+        )}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -302,7 +319,7 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: ACCENT },
 
   topBg: {
-    height: 280, backgroundColor: ACCENT,
+    height: 260, backgroundColor: ACCENT,
     justifyContent: 'flex-end', alignItems: 'center',
     paddingBottom: 32, overflow: 'hidden',
   },
@@ -316,7 +333,6 @@ const styles = StyleSheet.create({
     borderRadius: width * 0.6, backgroundColor: 'rgba(255,255,255,0.08)',
     top: -width * 0.3, right: -width * 0.4,
   },
-
   logoWrap:   { alignItems: 'center' },
   logoRing:   {
     width: 88, height: 88, borderRadius: 44,
@@ -326,7 +342,8 @@ const styles = StyleSheet.create({
   logoCircle: {
     width: 70, height: 70, borderRadius: 35, backgroundColor: '#fff',
     justifyContent: 'center', alignItems: 'center',
-    shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 6,
+    shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 }, elevation: 6,
   },
   logoEmoji: { fontSize: 34 },
   brand:     { fontSize: 32, fontWeight: 'bold', color: '#fff', letterSpacing: 1, marginBottom: 4 },
@@ -336,19 +353,14 @@ const styles = StyleSheet.create({
     flex: 1, backgroundColor: '#F5F5F7',
     borderTopLeftRadius: 28, borderTopRightRadius: 28, marginTop: -20,
   },
-  formContent: { paddingHorizontal: 24, paddingTop: 28, paddingBottom: 40 },
+  formContent: { paddingHorizontal: 24, paddingTop: 32, paddingBottom: 40 },
 
-  tabRow: {
-    flexDirection: 'row', backgroundColor: '#E9E9EE',
-    borderRadius: 14, padding: 4, marginBottom: 24,
-  },
-  tabBtn:           { flex: 1, paddingVertical: 11, borderRadius: 11, alignItems: 'center' },
-  tabBtnActive:     { backgroundColor: '#fff', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 4, elevation: 2 },
-  tabBtnText:       { fontSize: 15, fontWeight: '600', color: '#999' },
-  tabBtnTextActive: { color: '#111' },
+  stepTitle: { fontSize: 22, fontWeight: 'bold', color: '#111', marginBottom: 8, textAlign: 'center' },
+  stepSub:   { fontSize: 14, color: '#888', textAlign: 'center', lineHeight: 22, marginBottom: 28 },
+  boldPhone: { fontWeight: '700', color: '#111' },
 
-  fieldWrap:  { marginBottom: 14 },
-  fieldLabel: { fontSize: 13, fontWeight: '600', color: '#666', marginBottom: 7 },
+  fieldWrap:  { marginBottom: 8 },
+  fieldLabel: { fontSize: 13, fontWeight: '600', color: '#666', marginBottom: 8 },
   inputBox: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff',
     borderRadius: 14, borderWidth: 1.5, borderColor: '#EBEBEB', paddingHorizontal: 12,
@@ -357,8 +369,10 @@ const styles = StyleSheet.create({
   inputBoxError: { borderColor: ACCENT },
   inputIcon: { fontSize: 16, marginRight: 8 },
   input:     { flex: 1, paddingVertical: 14, fontSize: 15, color: '#111' },
-  eyeBtn:    { padding: 6 },
-  eyeIcon:   { fontSize: 17 },
+
+  otpLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  expiryText: { fontSize: 13, color: '#888', fontWeight: '600' },
+  expiryTextUrgent: { color: '#FF4040' },
 
   errorBox: {
     backgroundColor: '#FFF0EB', borderRadius: 10, padding: 10,
@@ -366,27 +380,26 @@ const styles = StyleSheet.create({
   },
   errorText: { fontSize: 13, color: '#CC4400', fontWeight: '500' },
 
-  checkRow:  { flexDirection: 'row', gap: 20, marginBottom: 4, marginTop: 4 },
-  checkItem: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  checkbox: {
-    width: 22, height: 22, borderRadius: 7, borderWidth: 1.5, borderColor: '#DEDEDE',
-    backgroundColor: '#F7F7F7', justifyContent: 'center', alignItems: 'center',
-  },
-  checkboxOn: { backgroundColor: ACCENT, borderColor: ACCENT },
-  checkTick:  { color: '#fff', fontSize: 12, fontWeight: 'bold' },
-  checkLabel: { fontSize: 13, color: '#555', fontWeight: '500' },
-
-  forgotBtn:  { alignSelf: 'flex-end', marginBottom: 18, marginTop: 8 },
-  forgotText: { fontSize: 13, color: ACCENT, fontWeight: '600' },
-
   button: {
     backgroundColor: ACCENT, borderRadius: 14, paddingVertical: 16, alignItems: 'center',
-    shadowColor: ACCENT, shadowOpacity: 0.35, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 5,
+    shadowColor: ACCENT, shadowOpacity: 0.35, shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 }, elevation: 5, marginTop: 8,
   },
   buttonDisabled: { backgroundColor: '#FFBFA6', shadowOpacity: 0 },
   buttonText:     { color: '#fff', fontSize: 17, fontWeight: 'bold', letterSpacing: 0.3 },
 
-  switchRow:  { marginTop: 20, alignItems: 'center' },
-  switchText: { fontSize: 13, color: '#999' },
-  switchLink: { color: ACCENT, fontWeight: '700' },
+  resendRow: {
+    flexDirection: 'row', justifyContent: 'center',
+    alignItems: 'center', marginTop: 18,
+  },
+  resendText:         { fontSize: 14, color: ACCENT, fontWeight: '600' },
+  resendTextDisabled: { color: '#BBBBBB' },
+  dividerDot:         { fontSize: 14, color: '#CCCCCC' },
+  changePhoneText:    { fontSize: 14, color: '#999', fontWeight: '500' },
+
+  noticeBox: {
+    backgroundColor: '#F0F0F5', borderRadius: 12,
+    padding: 14, marginTop: 20,
+  },
+  noticeText: { fontSize: 12, color: '#888', lineHeight: 19, textAlign: 'center' },
 });
