@@ -1,10 +1,12 @@
-import { useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
   ScrollView, Animated, Share,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { doc, getDoc } from 'firebase/firestore';
+import { auth, db } from '../firebase/config';
 
 import { ACCENT, ACCENT_LIGHT } from '../constants/colors';
 
@@ -16,9 +18,8 @@ const formatTime = (totalSeconds: number) => {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 };
 
-const calcKcal = (seconds: number) => {
-  // MET 8 (러닝), 체중 65kg 기준
-  return Math.round(8 * 65 * (seconds / 3600));
+const calcKcal = (seconds: number, weightKg: number) => {
+  return Math.round(8 * weightKg * (seconds / 3600));
 };
 
 const getAchievementMessage = (distanceKm: number, paceStr: string) => {
@@ -40,10 +41,23 @@ export default function RunningResultScreen() {
     pace: string;
   }>();
 
+  const [weightKg, setWeightKg] = useState(65);
+
+  useEffect(() => {
+    const uid = auth.currentUser?.uid;
+    if (!uid) return;
+    getDoc(doc(db, 'users', uid)).then(snap => {
+      if (snap.exists()) {
+        const w = parseInt(snap.data().weight || '0');
+        if (w > 0) setWeightKg(w);
+      }
+    }).catch(() => {});
+  }, []);
+
   const duration = parseInt(params.duration || '0');
   const distanceKm = parseFloat(params.distanceKm || '0');
   const pace = params.pace || "--'--\"";
-  const kcal = calcKcal(duration);
+  const kcal = calcKcal(duration, weightKg);
   const { emoji, msg } = getAchievementMessage(distanceKm, pace);
 
   const handleShare = async () => {
