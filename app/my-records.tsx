@@ -37,6 +37,8 @@ const fmtPace = (secPerKm: number) => {
   return `${m}'${String(s).padStart(2, '0')}"`;
 };
 
+const BAR_MAX_H = 90;
+
 // ─── 컬럼 정의 ───────────────────────────────────────────────────
 const COLUMNS: { key: SortKey; label: string; width: number; align: 'left' | 'right' | 'center' }[] = [
   { key: 'date',       label: '날짜',   width: 90,  align: 'left'   },
@@ -54,6 +56,7 @@ export default function MyRecordsScreen() {
   const [loading, setLoading] = useState(true);
   const [sortKey, setSortKey] = useState<SortKey>('date');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const [chartTab, setChartTab] = useState<'weekly' | 'pace'>('weekly');
 
   // 전체 요약 통계
   const [totalKm, setTotalKm] = useState(0);
@@ -153,6 +156,59 @@ export default function MyRecordsScreen() {
     );
   };
 
+  // ─── 차트 데이터 ─────────────────────────────────────────────
+  const getMonday = (dateStr: string): string => {
+    const d = new Date(dateStr + 'T00:00:00');
+    const day = d.getDay();
+    d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day));
+    return d.toISOString().slice(0, 10);
+  };
+
+  const weeklyChartData = useMemo(() => {
+    const todayMonday = getMonday(new Date().toISOString().slice(0, 10));
+    const weeks = Array.from({ length: 8 }, (_, i) => {
+      const d = new Date(todayMonday + 'T00:00:00');
+      d.setDate(d.getDate() - (7 - i) * 7);
+      const ws = d.toISOString().slice(0, 10);
+      return { weekStart: ws, label: `${d.getMonth() + 1}/${d.getDate()}` };
+    });
+    const weekMap: Record<string, number> = {};
+    records.forEach(r => {
+      if (!r.date) return;
+      const ws = getMonday(r.date);
+      weekMap[ws] = (weekMap[ws] || 0) + r.distanceKm;
+    });
+    const items = weeks.map(w => ({
+      label: w.label,
+      km: parseFloat((weekMap[w.weekStart] || 0).toFixed(1)),
+      isCurrent: w.weekStart === todayMonday,
+    }));
+    const maxKm = Math.max(...items.map(d => d.km), 1);
+    return items.map(item => ({
+      ...item,
+      barH: item.km > 0 ? Math.max((item.km / maxKm) * BAR_MAX_H, 4) : 0,
+    }));
+  }, [records]);
+
+  const paceChartData = useMemo(() => {
+    const items = [...records]
+      .filter(r => r.paceSecPerKm > 0)
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .slice(-10)
+      .map((r, i, arr) => ({
+        label: r.date.slice(5).replace('-', '/'),
+        paceSec: r.paceSecPerKm,
+        paceFmt: r.paceFmt,
+        isLatest: i === arr.length - 1,
+      }));
+    if (items.length < 2) return items;
+    const minPace = Math.min(...items.map(d => d.paceSec));
+    return items.map(item => ({
+      ...item,
+      barH: Math.max((minPace / item.paceSec) * BAR_MAX_H, 4),
+    }));
+  }, [records]);
+
   // ─── 정렬 ────────────────────────────────────────────────────
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -251,6 +307,81 @@ export default function MyRecordsScreen() {
                 <Text style={styles.monthStatValue}>{monthBestPace > 0 ? fmtPace(monthBestPace) : '-'}</Text>
                 <Text style={styles.monthStatLabel}>최고 페이스</Text>
               </View>
+            </View>
+          </View>
+        )}
+
+        {/* ── 차트 ─────────────────────────────────────────── */}
+        {!loading && records.length >= 2 && (
+          <View style={styles.chartCard}>
+            {/* 탭 */}
+            <View style={styles.chartTabRow}>
+              {(['weekly', 'pace'] as const).map(tab => (
+                <TouchableOpacity
+                  key={tab}
+                  style={[styles.chartTab, chartTab === tab && styles.chartTabActive]}
+                  onPress={() => setChartTab(tab)}
+                >
+                  <Text style={[styles.chartTabText, chartTab === tab && styles.chartTabTextActive]}>
+                    {tab === 'weekly' ? '주간 거리' : '페이스 추이'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={styles.chartBody}>
+              {chartTab === 'weekly' ? (
+                <>
+                  <View style={styles.chartArea}>
+                    {weeklyChartData.map((item, i) => (
+                      <View key={i} style={styles.barCol}>
+                        {item.km > 0 && (
+                          <Text style={styles.barValueText}>{item.km}</Text>
+                        )}
+                        <View style={[
+                          styles.bar,
+                          { height: item.barH || 0 },
+                          item.isCurrent ? styles.barActive : styles.barDefault,
+                        ]} />
+                      </View>
+                    ))}
+                  </View>
+                  <View style={styles.xRow}>
+                    {weeklyChartData.map((item, i) => (
+                      <Text key={i} style={[styles.xLabel, item.isCurrent && styles.xLabelActive]}>
+                        {item.label}
+                      </Text>
+                    ))}
+                  </View>
+                  <Text style={styles.chartHint}>단위: km · 최근 8주</Text>
+                </>
+              ) : paceChartData.length < 2 ? (
+                <View style={styles.chartEmpty}>
+                  <Text style={styles.chartEmptyText}>러닝 기록이 2개 이상이면 추이를 볼 수 있어요</Text>
+                </View>
+              ) : (
+                <>
+                  <View style={styles.chartArea}>
+                    {paceChartData.map((item, i) => (
+                      <View key={i} style={styles.barCol}>
+                        <View style={[
+                          styles.bar,
+                          { height: (item as any).barH || 0 },
+                          item.isLatest ? styles.barActive : styles.barDefault,
+                        ]} />
+                      </View>
+                    ))}
+                  </View>
+                  <View style={styles.xRow}>
+                    {paceChartData.map((item, i) => (
+                      <Text key={i} style={[styles.xLabel, item.isLatest && styles.xLabelActive]}>
+                        {item.label}
+                      </Text>
+                    ))}
+                  </View>
+                  <Text style={styles.chartHint}>막대가 높을수록 빨라요 · 최근 10회</Text>
+                </>
+              )}
             </View>
           </View>
         )}
@@ -417,6 +548,61 @@ const styles = StyleSheet.create({
   monthStatValue: { fontSize: 17, fontWeight: 'bold', color: '#fff', marginBottom: 3 },
   monthStatLabel: { fontSize: 10, color: 'rgba(255,255,255,0.5)', fontWeight: '600' },
   monthStatDiv: { width: 1, height: 28, backgroundColor: 'rgba(255,255,255,0.12)' },
+
+  // 차트 카드
+  chartCard: {
+    backgroundColor: '#fff',
+    marginHorizontal: 16, marginTop: 12,
+    borderRadius: 18, overflow: 'hidden',
+    shadowColor: '#000', shadowOpacity: 0.05,
+    shadowRadius: 8, shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  chartTabRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1, borderBottomColor: '#F0F0F0',
+  },
+  chartTab: {
+    flex: 1, paddingVertical: 12, alignItems: 'center',
+  },
+  chartTabActive: {
+    borderBottomWidth: 2, borderBottomColor: ACCENT,
+  },
+  chartTabText: { fontSize: 13, fontWeight: '600', color: '#bbb' },
+  chartTabTextActive: { color: ACCENT },
+  chartBody: {
+    paddingHorizontal: 16, paddingTop: 14, paddingBottom: 12,
+  },
+  chartArea: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    height: BAR_MAX_H + 20,
+  },
+  barCol: {
+    flex: 1, alignItems: 'center', justifyContent: 'flex-end',
+  },
+  barValueText: {
+    fontSize: 8, color: '#bbb', fontWeight: '600', marginBottom: 2,
+  },
+  bar: {
+    width: '60%', borderRadius: 3,
+  },
+  barDefault: { backgroundColor: ACCENT + '44' },
+  barActive: { backgroundColor: ACCENT },
+  xRow: {
+    flexDirection: 'row', marginTop: 4,
+  },
+  xLabel: {
+    flex: 1, fontSize: 9, color: '#ccc', textAlign: 'center',
+  },
+  xLabelActive: { color: ACCENT, fontWeight: '700' },
+  chartHint: {
+    fontSize: 10, color: '#ccc', textAlign: 'center', marginTop: 6,
+  },
+  chartEmpty: {
+    paddingVertical: 24, alignItems: 'center',
+  },
+  chartEmptyText: { fontSize: 13, color: '#ccc', textAlign: 'center' },
 
   // 테이블 카드
   tableCard: {
