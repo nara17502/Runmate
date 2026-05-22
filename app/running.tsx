@@ -4,6 +4,7 @@ import {
   Alert, Modal, ActivityIndicator, AppState, BackHandler,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import MapView, { Polyline, Marker } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
@@ -60,10 +61,14 @@ export default function RunningScreen() {
   const [saving, setSaving] = useState(false);
   const [savePhase, setSavePhase] = useState<'idle' | 'saving' | 'retrying' | 'failed'>('idle');
 
+  const [routeCoords, setRouteCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+  const [currentPos, setCurrentPos] = useState<{ latitude: number; longitude: number } | null>(null);
+
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const locationRef = useRef<Location.LocationSubscription | null>(null);
   const lastPosRef = useRef<{ lat: number; lon: number } | null>(null);
   const routeRef = useRef<{ lat: number; lon: number; time: number }[]>([]);
+  const mapRef = useRef<MapView>(null);
   const phaseRef = useRef<Phase>('idle');
   const pendingRunRef = useRef<{
     runData: any; userId: string;
@@ -103,6 +108,16 @@ export default function RunningScreen() {
             }
             lastPosRef.current = { lat, lon };
           });
+          if (pts.length > 0) {
+            const newCoords = pts.map(([lat, lon]) => ({ latitude: lat, longitude: lon }));
+            setRouteCoords(prev => [...prev, ...newCoords]);
+            const last = newCoords[newCoords.length - 1];
+            setCurrentPos(last);
+            mapRef.current?.animateToRegion(
+              { ...last, latitudeDelta: 0.003, longitudeDelta: 0.003 },
+              300,
+            );
+          }
           // Re-register live callback for foreground updates
           setOnLocation(makeLiveHandler());
         }
@@ -141,6 +156,13 @@ export default function RunningScreen() {
       if (d >= 1 && d < 50) setDistanceM(prev => prev + d);
     }
     lastPosRef.current = { lat, lon };
+    const coord = { latitude: lat, longitude: lon };
+    setRouteCoords(prev => [...prev, coord]);
+    setCurrentPos(coord);
+    mapRef.current?.animateToRegion(
+      { ...coord, latitudeDelta: 0.003, longitudeDelta: 0.003 },
+      300,
+    );
   };
 
   // ─── 타이머 / GPS 제어 ────────────────────────────────────────
@@ -218,6 +240,8 @@ export default function RunningScreen() {
     }
     setSeconds(0);
     setDistanceM(0);
+    setRouteCoords([]);
+    setCurrentPos(null);
     lastPosRef.current = null;
     routeRef.current = [];
     await activateKeepAwakeAsync();
@@ -488,6 +512,40 @@ export default function RunningScreen() {
         </View>
       </View>
 
+      {/* 실시간 지도 */}
+      {phase !== 'idle' && (
+        <View style={styles.mapSection}>
+          <MapView
+            ref={mapRef}
+            style={styles.map}
+            showsUserLocation
+            showsMyLocationButton={false}
+            showsCompass={false}
+            scrollEnabled={false}
+            zoomEnabled={false}
+            rotateEnabled={false}
+            pitchEnabled={false}
+            initialRegion={currentPos
+              ? { ...currentPos, latitudeDelta: 0.003, longitudeDelta: 0.003 }
+              : { latitude: 37.5665, longitude: 126.978, latitudeDelta: 0.01, longitudeDelta: 0.01 }
+            }
+          >
+            {routeCoords.length > 1 && (
+              <Polyline
+                coordinates={routeCoords}
+                strokeColor={ACCENT}
+                strokeWidth={4}
+              />
+            )}
+            {routeCoords.length > 0 && (
+              <Marker coordinate={routeCoords[0]} anchor={{ x: 0.5, y: 0.5 }}>
+                <View style={styles.startDot} />
+              </Marker>
+            )}
+          </MapView>
+        </View>
+      )}
+
       {/* 시작 전 안내 */}
       {phase === 'idle' && (
         <View style={styles.guideBox}>
@@ -631,6 +689,19 @@ const styles = StyleSheet.create({
   statDivider: { width: 1, backgroundColor: '#444' },
   statValue: { fontSize: 32, fontWeight: 'bold', color: ACCENT },
   statLabel: { color: '#999', fontSize: 13, marginTop: 4 },
+
+  // 실시간 지도
+  mapSection: {
+    marginHorizontal: 16, marginTop: 12,
+    height: 200, borderRadius: 16, overflow: 'hidden',
+    borderWidth: 1, borderColor: '#2a2a4e',
+  },
+  map: { flex: 1 },
+  startDot: {
+    width: 12, height: 12, borderRadius: 6,
+    backgroundColor: '#4CAF50',
+    borderWidth: 2, borderColor: '#fff',
+  },
 
   // 안내 박스
   guideBox: {
