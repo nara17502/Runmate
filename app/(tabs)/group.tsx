@@ -9,7 +9,7 @@ import {
   collection, doc, getDoc, setDoc, addDoc,
   query, where, getDocs, arrayUnion, arrayRemove,
   deleteDoc, serverTimestamp,
-  onSnapshot, orderBy, limit,
+  onSnapshot, orderBy, limit, documentId,
 } from 'firebase/firestore';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
@@ -639,38 +639,57 @@ export default function GroupScreen() {
         ? new Date(group.startDateTime) < new Date()
         : false;
 
-      const memberDetails = await Promise.all(
-        group.members.map(async (uid: string) => {
-          const userDoc = await getDoc(doc(db, 'users', uid));
-          const profile = userDoc.exists() ? userDoc.data() : {};
-          const runSnap = await getDocs(
-            query(collection(db, 'runningRecords'), where('userId', '==', uid), where('date', '==', meetupDate))
-          );
-          let meetupKm = 0;
-          runSnap.docs.forEach(d => { meetupKm += d.data().distanceKm || 0; });
-          return {
-            uid,
-            nickname: profile.nickname || '익명',
-            age: profile.age || '-',
-            gender: profile.gender || '-',
-            region: profile.region || '-',
-            todayKm: parseFloat(meetupKm.toFixed(2)),
-            isMe: uid === userId,
-            isOwner: uid === group.ownerId,
-            completed: meetupKm > 0,
-          };
-        })
-      );
+      const memberUids: string[] = group.members;
+      const profileMap: Record<string, any> = {};
+      const runMap: Record<string, number> = {};
+      if (memberUids.length > 0) {
+        const chunks: string[][] = [];
+        for (let i = 0; i < memberUids.length; i += 30) chunks.push(memberUids.slice(i, i + 30));
+        const [profileSnaps, runSnaps] = await Promise.all([
+          Promise.all(chunks.map(c => getDocs(query(collection(db, 'users'), where(documentId(), 'in', c))))),
+          Promise.all(chunks.map(c => getDocs(query(
+            collection(db, 'runningRecords'), where('userId', 'in', c), where('date', '==', meetupDate),
+          )))),
+        ]);
+        profileSnaps.forEach(s => s.docs.forEach(d => { profileMap[d.id] = d.data(); }));
+        runSnaps.forEach(s => s.docs.forEach(d => {
+          const data = d.data();
+          runMap[data.userId] = (runMap[data.userId] || 0) + (data.distanceKm || 0);
+        }));
+      }
+      const memberDetails = memberUids.map((uid: string) => {
+        const profile = profileMap[uid] || {};
+        const meetupKm = runMap[uid] || 0;
+        return {
+          uid,
+          nickname: profile.nickname || '익명',
+          age: profile.age || '-',
+          gender: profile.gender || '-',
+          region: profile.region || '-',
+          todayKm: parseFloat(meetupKm.toFixed(2)),
+          isMe: uid === userId,
+          isOwner: uid === group.ownerId,
+          completed: meetupKm > 0,
+        };
+      });
       memberDetails.sort((a, b) => b.todayKm - a.todayKm);
 
       // 대기자 프로필 로드
-      const waitlistDetails = await Promise.all(
-        (group.waitlist || []).map(async (uid: string) => {
-          const userDoc = await getDoc(doc(db, 'users', uid));
-          const profile = userDoc.exists() ? userDoc.data() : {};
-          return { uid, nickname: profile.nickname || '익명', isMe: uid === userId };
-        })
-      );
+      const waitlistUids: string[] = group.waitlist || [];
+      const waitProfileMap: Record<string, any> = {};
+      if (waitlistUids.length > 0) {
+        const chunks: string[][] = [];
+        for (let i = 0; i < waitlistUids.length; i += 30) chunks.push(waitlistUids.slice(i, i + 30));
+        const snaps = await Promise.all(
+          chunks.map(c => getDocs(query(collection(db, 'users'), where(documentId(), 'in', c))))
+        );
+        snaps.forEach(s => s.docs.forEach(d => { waitProfileMap[d.id] = d.data(); }));
+      }
+      const waitlistDetails = waitlistUids.map((uid: string) => ({
+        uid,
+        nickname: (waitProfileMap[uid] || {}).nickname || '익명',
+        isMe: uid === userId,
+      }));
 
       setSelectedGroup({ ...group, memberDetails, waitlistDetails, isPast, meetupDate });
       setupChatListener(group.id);

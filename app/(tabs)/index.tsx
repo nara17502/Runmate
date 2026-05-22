@@ -4,7 +4,7 @@ import {
   Modal, Animated, PanResponder, RefreshControl, Platform,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { collection, query, orderBy, limit, getDocs, where, getDoc, doc } from 'firebase/firestore';
+import { collection, query, orderBy, limit, getDocs, where, getDoc, doc, documentId } from 'firebase/firestore';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { fmtDateKo, todayIso, thisMonthIso } from '../../constants/dateUtils';
 import { auth, db } from '../../firebase/config';
@@ -238,13 +238,18 @@ export default function HomeScreen() {
         if (!userMap[uid]) userMap[uid] = { userId: uid, totalKm: 0, nickname: '', age: 0 };
         userMap[uid].totalKm += data.distanceKm;
       });
-      for (const uid of Object.keys(userMap)) {
-        const uDoc = await getDoc(doc(db, 'users', uid));
-        if (uDoc.exists()) {
-          const p = uDoc.data();
-          userMap[uid].nickname = p.nickname || '익명';
-          userMap[uid].age = parseInt(p.age) || 0;
-        }
+      const uids = Object.keys(userMap);
+      if (uids.length > 0) {
+        const chunks: string[][] = [];
+        for (let i = 0; i < uids.length; i += 30) chunks.push(uids.slice(i, i + 30));
+        const userSnaps = await Promise.all(
+          chunks.map(c => getDocs(query(collection(db, 'users'), where(documentId(), 'in', c))))
+        );
+        userSnaps.forEach(snap => snap.docs.forEach(d => {
+          const p = d.data();
+          userMap[d.id].nickname = p.nickname || '익명';
+          userMap[d.id].age = parseInt(p.age) || 0;
+        }));
       }
       const filtered = Object.values(userMap)
         .filter(u => Math.abs(u.age - myAgeNum) <= 5)
