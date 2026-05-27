@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ACCENT, ACCENT_LIGHT, BG } from '../../constants/colors';
 import {
@@ -8,10 +8,14 @@ import {
   Image, ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import {
+  signOut, signInWithPhoneNumber, PhoneAuthProvider,
+  reauthenticateWithCredential, deleteUser,
+} from 'firebase/auth';
+import { doc, getDoc, setDoc, collection, query, where, getDocs, writeBatch } from 'firebase/firestore';
+import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import * as ImagePicker from 'expo-image-picker';
-import { auth, db } from '../../firebase/config';
+import { auth, db, app } from '../../firebase/config';
 import { CLOUDINARY_CLOUD_NAME, CLOUDINARY_UPLOAD_PRESET } from '../../constants/cloudinary';
 import { updateTempAfterRace } from '../../firebase/temperature';
 import {
@@ -142,6 +146,85 @@ export default function ProfileScreen() {
   const [notifPermission, setNotifPermission] = useState(false);
 
   const userId = auth.currentUser?.uid;
+
+  // ─── 계정 삭제 ───────────────────────────────────────────────
+  const deleteRecaptchaRef = useRef<FirebaseRecaptchaVerifierModal>(null);
+  const [showDeleteModal, setShowDeleteModal]     = useState(false);
+  const [deletePhase, setDeletePhase]             = useState<'confirm' | 'otp'>('confirm');
+  const [deleteOtp, setDeleteOtp]                 = useState('');
+  const [deleteLoading, setDeleteLoading]         = useState(false);
+  const [deleteError, setDeleteError]             = useState('');
+  const [deleteVerificationId, setDeleteVerificationId] = useState('');
+  const [deleteResendTimer, setDeleteResendTimer] = useState(0);
+  const deleteResendRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const startDeleteResendTimer = () => {
+    setDeleteResendTimer(60);
+    clearInterval(deleteResendRef.current ?? undefined);
+    deleteResendRef.current = setInterval(() => {
+      setDeleteResendTimer(prev => {
+        if (prev <= 1) { clearInterval(deleteResendRef.current!); return 0; }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const sendDeleteOtp = async () => {
+    const phoneNumber = auth.currentUser?.phoneNumber;
+    if (!phoneNumber) return;
+    setDeleteLoading(true);
+    setDeleteError('');
+    try {
+      const result = await signInWithPhoneNumber(auth, phoneNumber, deleteRecaptchaRef.current!);
+      setDeleteVerificationId(result.verificationId);
+      setDeletePhase('otp');
+      setDeleteOtp('');
+      startDeleteResendTimer();
+    } catch (err: any) {
+      const code = err?.code ?? '';
+      if (code === 'auth/too-many-requests') setDeleteError('요청이 너무 많아요. 잠시 후 다시 해주세요');
+      else setDeleteError('인증번호 발송에 실패했어요. 다시 시도해주세요');
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  const confirmDeleteAccount = async () => {
+    const user = auth.currentUser;
+    if (!user || !deleteVerificationId || deleteOtp.length !== 6) return;
+    setDeleteLoading(true);
+    setDeleteError('');
+    try {
+      // 재인증
+      const credential = PhoneAuthProvider.credential(deleteVerificationId, deleteOtp);
+      await reauthenticateWithCredential(user, credential);
+
+      // Firestore 데이터 삭제 (runningRecords + users 문서)
+      const uid = user.uid;
+      const runSnap = await getDocs(query(collection(db, 'runningRecords'), where('userId', '==', uid)));
+      const batch = writeBatch(db);
+      runSnap.docs.forEach(d => batch.delete(d.ref));
+      batch.delete(doc(db, 'users', uid));
+      await batch.commit();
+
+      // Firebase Auth 계정 삭제 → onAuthStateChanged가 로그인 화면으로 이동시킴
+      await deleteUser(user);
+    } catch (err: any) {
+      const code = err?.code ?? '';
+      if (code === 'auth/invalid-verification-code') setDeleteError('인증번호가 올바르지 않아요');
+      else if (code === 'auth/code-expired') setDeleteError('인증번호가 만료됐어요. 재발송해주세요');
+      else if (code === 'auth/requires-recent-login') setDeleteError('재인증이 필요해요. 인증번호를 다시 받아주세요');
+      else setDeleteError('탈퇴 처리 중 오류가 발생했어요. 다시 시도해주세요');
+      setDeleteLoading(false);
+    }
+  };
+
+  const openDeleteModal = () => {
+    setDeletePhase('confirm');
+    setDeleteOtp('');
+    setDeleteError('');
+    setShowDeleteModal(true);
+  };
 
   useEffect(() => {
     loadProfile();
@@ -472,6 +555,13 @@ export default function ProfileScreen() {
   // ═══════════════════════════════════════════════════════════════
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
+      {/* reCAPTCHA — 계정 삭제 재인증용 */}
+      <FirebaseRecaptchaVerifierModal
+        ref={deleteRecaptchaRef}
+        firebaseConfig={app.options}
+        attemptInvisibleVerification
+      />
+
       <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false}>
 
         {/* ── 프로필 히어로 카드 ─────────────────────────────── */}
@@ -700,6 +790,11 @@ export default function ProfileScreen() {
           <Text style={styles.logoutText}>로그아웃</Text>
         </TouchableOpacity>
 
+        {/* ── 계정 탈퇴 ──────────────────────────────────────── */}
+        <TouchableOpacity style={styles.deleteBtn} onPress={openDeleteModal}>
+          <Text style={styles.deleteText}>계정 탈퇴</Text>
+        </TouchableOpacity>
+
         <View style={{ height: 40 + insets.bottom }} />
       </ScrollView>
 
@@ -858,6 +953,119 @@ export default function ProfileScreen() {
             )}
           </View>
         </View>
+      </Modal>
+
+      {/* ══ 계정 탈퇴 모달 ══════════════════════════════════════ */}
+      <Modal
+        visible={showDeleteModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => !deleteLoading && setShowDeleteModal(false)}
+      >
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <View style={styles.deleteOverlay}>
+            <View style={styles.deleteSheet}>
+              <View style={styles.sheetHandle} />
+
+              {/* ── 1단계: 경고 확인 ── */}
+              {deletePhase === 'confirm' && (
+                <>
+                  <Text style={styles.deleteSheetEmoji}>⚠️</Text>
+                  <Text style={styles.deleteSheetTitle}>정말 탈퇴하시겠어요?</Text>
+                  <View style={styles.deleteWarnBox}>
+                    <Text style={styles.deleteWarnText}>
+                      탈퇴 시 아래 데이터가 <Text style={styles.deleteWarnBold}>영구 삭제</Text>됩니다.{'\n\n'}
+                      • 프로필 및 닉네임{'\n'}
+                      • 전체 러닝 기록{'\n'}
+                      • 대회 기록 및 사진{'\n'}
+                      • 배지 · 동물 등급{'\n\n'}
+                      삭제된 데이터는 복구할 수 없어요.
+                    </Text>
+                  </View>
+                  <Text style={styles.deletePhoneHint}>
+                    본인 확인을 위해{' '}
+                    <Text style={styles.deletePhoneBold}>
+                      {auth.currentUser?.phoneNumber?.replace(/(\+82)(\d{2})(\d{4})(\d{4})/, '0$2-$3-$4')}
+                    </Text>
+                    {'\n'}으로 인증번호를 발송합니다.
+                  </Text>
+                  {!!deleteError && (
+                    <View style={styles.deleteErrorBox}>
+                      <Text style={styles.deleteErrorText}>⚠ {deleteError}</Text>
+                    </View>
+                  )}
+                  <TouchableOpacity
+                    style={[styles.deleteConfirmBtn, deleteLoading && { opacity: 0.6 }]}
+                    onPress={sendDeleteOtp}
+                    disabled={deleteLoading}
+                  >
+                    {deleteLoading
+                      ? <ActivityIndicator color="#fff" size="small" />
+                      : <Text style={styles.deleteConfirmBtnText}>인증번호 받기</Text>
+                    }
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.deleteCancelBtn}
+                    onPress={() => setShowDeleteModal(false)}
+                    disabled={deleteLoading}
+                  >
+                    <Text style={styles.deleteCancelText}>취소</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+
+              {/* ── 2단계: OTP 입력 ── */}
+              {deletePhase === 'otp' && (
+                <>
+                  <Text style={styles.deleteSheetEmoji}>🔢</Text>
+                  <Text style={styles.deleteSheetTitle}>인증번호 입력</Text>
+                  <Text style={styles.deleteOtpDesc}>
+                    전송된 6자리 번호를 입력하면{'\n'}계정이 영구 삭제됩니다.
+                  </Text>
+                  <TextInput
+                    style={styles.deleteOtpInput}
+                    placeholder="인증번호 6자리"
+                    placeholderTextColor="#ccc"
+                    value={deleteOtp}
+                    onChangeText={t => { setDeleteOtp(t.replace(/\D/g, '').slice(0, 6)); setDeleteError(''); }}
+                    keyboardType="number-pad"
+                    maxLength={6}
+                    autoFocus
+                  />
+                  {!!deleteError && (
+                    <View style={styles.deleteErrorBox}>
+                      <Text style={styles.deleteErrorText}>⚠ {deleteError}</Text>
+                    </View>
+                  )}
+                  <TouchableOpacity
+                    style={[styles.deleteConfirmBtn, (deleteLoading || deleteOtp.length !== 6) && { opacity: 0.5 }]}
+                    onPress={confirmDeleteAccount}
+                    disabled={deleteLoading || deleteOtp.length !== 6}
+                  >
+                    {deleteLoading
+                      ? <ActivityIndicator color="#fff" size="small" />
+                      : <Text style={styles.deleteConfirmBtnText}>탈퇴 확인</Text>
+                    }
+                  </TouchableOpacity>
+                  <View style={styles.deleteResendRow}>
+                    <TouchableOpacity
+                      onPress={sendDeleteOtp}
+                      disabled={deleteResendTimer > 0 || deleteLoading}
+                    >
+                      <Text style={[styles.deleteResendText, (deleteResendTimer > 0 || deleteLoading) && { color: '#ccc' }]}>
+                        {deleteResendTimer > 0 ? `재발송 (${deleteResendTimer}s)` : '인증번호 재발송'}
+                      </Text>
+                    </TouchableOpacity>
+                    <Text style={{ color: '#ccc' }}> · </Text>
+                    <TouchableOpacity onPress={() => { setDeletePhase('confirm'); setDeleteOtp(''); setDeleteError(''); }} disabled={deleteLoading}>
+                      <Text style={styles.deleteCancelText}>취소</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ══ 대회 기록 추가/수정 모달 ════════════════════════════ */}
@@ -1172,6 +1380,69 @@ const styles = StyleSheet.create({
     alignItems: 'center', backgroundColor: '#fff',
   },
   logoutText: { color: '#FF8060', fontWeight: '700', fontSize: 15 },
+
+  // 계정 탈퇴 버튼
+  deleteBtn: {
+    marginHorizontal: 16, marginTop: 8,
+    paddingVertical: 14, borderRadius: 16,
+    alignItems: 'center',
+  },
+  deleteText: { color: '#BBBBBB', fontSize: 13, fontWeight: '500' },
+
+  // 계정 탈퇴 모달
+  deleteOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'flex-end',
+  },
+  deleteSheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: 24, paddingBottom: 40, paddingTop: 12,
+    alignItems: 'center',
+  },
+  deleteSheetEmoji: { fontSize: 40, marginTop: 8, marginBottom: 12 },
+  deleteSheetTitle: { fontSize: 20, fontWeight: 'bold', color: '#111', marginBottom: 16 },
+  deleteWarnBox: {
+    backgroundColor: '#FFF5F5', borderRadius: 14,
+    padding: 16, marginBottom: 18, width: '100%',
+    borderWidth: 1, borderColor: '#FFD0D0',
+  },
+  deleteWarnText: { fontSize: 13, color: '#555', lineHeight: 22 },
+  deleteWarnBold: { color: '#D94040', fontWeight: '700' },
+  deletePhoneHint: {
+    fontSize: 13, color: '#888', textAlign: 'center',
+    lineHeight: 20, marginBottom: 16,
+  },
+  deletePhoneBold: { color: '#111', fontWeight: '700' },
+  deleteErrorBox: {
+    backgroundColor: '#FFF0EB', borderRadius: 10, padding: 10,
+    marginBottom: 12, width: '100%',
+    borderLeftWidth: 3, borderLeftColor: '#FF6B35',
+  },
+  deleteErrorText: { fontSize: 13, color: '#CC4400', fontWeight: '500' },
+  deleteConfirmBtn: {
+    backgroundColor: '#D94040', borderRadius: 14,
+    paddingVertical: 15, width: '100%', alignItems: 'center', marginBottom: 10,
+  },
+  deleteConfirmBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  deleteCancelBtn: { paddingVertical: 10, width: '100%', alignItems: 'center' },
+  deleteCancelText: { color: '#999', fontSize: 14, fontWeight: '500' },
+  deleteOtpDesc: {
+    fontSize: 14, color: '#888', textAlign: 'center',
+    lineHeight: 22, marginBottom: 20,
+  },
+  deleteOtpInput: {
+    borderWidth: 1.5, borderColor: '#EDEDED', borderRadius: 14,
+    paddingVertical: 14, paddingHorizontal: 16,
+    fontSize: 24, color: '#111', textAlign: 'center',
+    letterSpacing: 8, width: '100%', marginBottom: 12,
+    backgroundColor: '#FAFAFA',
+  },
+  deleteResendRow: {
+    flexDirection: 'row', alignItems: 'center',
+    marginTop: 4, paddingVertical: 8,
+  },
+  deleteResendText: { fontSize: 13, color: ACCENT, fontWeight: '600' },
 
   // ── 편집 모달 공통
   modalHeader: {
