@@ -1,0 +1,60 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF8240"/>
+      <stop offset="100%" stop-color="#E8440A"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.14)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 배경 -->
+  <rect width="1024" height="1024" fill="url(#bgGrad)"/>
+  <rect width="1024" height="600" fill="url(#gloss)"/>
+
+  <!-- 배경 원형 장식 -->
+  <circle cx="512" cy="480" r="390" fill="rgba(255,255,255,0.07)"/>
+  <circle cx="512" cy="480" r="290" fill="rgba(255,255,255,0.06)"/>
+
+  <!-- 왼쪽 속도선 -->
+  <line x1="155" y1="430" x2="305" y2="430" stroke="rgba(255,255,255,0.30)" stroke-width="20" stroke-linecap="round"/>
+  <line x1="130" y1="490" x2="275" y2="490" stroke="rgba(255,255,255,0.20)" stroke-width="15" stroke-linecap="round"/>
+  <line x1="150" y1="548" x2="280" y2="548" stroke="rgba(255,255,255,0.13)" stroke-width="11" stroke-linecap="round"/>
+
+  <!-- 달리는 사람 -->
+  <g fill="none" stroke="white" stroke-linecap="round" stroke-linejoin="round" stroke-width="48">
+    <!-- 머리 -->
+    <circle cx="565" cy="205" r="75" fill="white" stroke="none"/>
+    <!-- 몸통 (앞으로 기울어짐) -->
+    <line x1="548" y1="278" x2="510" y2="510"/>
+    <!-- 왼팔 (앞으로 뻗음) -->
+    <line x1="532" y1="355" x2="672" y2="298"/>
+    <!-- 오른팔 (뒤로 젖힘) -->
+    <line x1="532" y1="355" x2="395" y2="452"/>
+    <!-- 오른다리 (앞으로 뻗음) -->
+    <line x1="510" y1="510" x2="665" y2="705"/>
+    <!-- 오른발 -->
+    <line x1="665" y1="705" x2="758" y2="650"/>
+    <!-- 왼다리 (뒤로 차올림) -->
+    <line x1="510" y1="510" x2="368" y2="672"/>
+    <!-- 왼발 (킥백) -->
+    <line x1="368" y1="672" x2="308" y2="582"/>
+  </g>
+
+  <!-- 지면 선 -->
+  <line x1="260" y1="790" x2="780" y2="790" stroke="rgba(255,255,255,0.22)" stroke-width="14" stroke-linecap="round"/>
+
+  <!-- 앱 이름 -->
+  <text
+    x="512" y="888"
+    font-family="'Helvetica Neue', Arial, sans-serif"
+    font-size="96"
+    font-weight="800"
+    fill="white"
+    text-anchor="middle"
+    opacity="0.92"
+    letter-spacing="6"
+  >RunMate</text>
+</svg>
